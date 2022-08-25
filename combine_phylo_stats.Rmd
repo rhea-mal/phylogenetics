@@ -1,0 +1,49 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+## make combined table with pcawg and simulator phylogeny stats
+df_plot <- stats_SIMS
+df_plot$consensus_signature <- 'Simulation'
+df_plot$BRCA_gene_status <- 'Simulation'
+df_plot$data_type <- 'Simulation'
+tree_topology2 <- tree_topology[, c(3, 5, 7, 8, 9, 10, 12, 14, 15, 17, 18)]
+tree_topology2 <- rename(tree_topology2, avgLadder = average_ladder_size)
+tree_topology2 <- rename(tree_topology2, cherries = num_cherries)
+tree_topology2 <- rename(tree_topology2, colless.phylo = colless_index)
+tree_topology2 <- rename(tree_topology2, ILnumber = colless_index_normalized)
+tree_topology2 <- rename(tree_topology2, maxHeight = max_height)
+tree_topology2 <- rename(tree_topology2, pitchforks = num_pitchforks)
+tree_topology2 <- rename(tree_topology2, sackin.phylo = sackin_index)
+tree_topology2 <- rename(tree_topology2, stairs1 = stairs_1)
+tree_topology2 <- rename(tree_topology2, stairs2 = stairs_2)
+tree_topology2$data_type <- 'DLP'
+df_plot <- rbind(df_plot, tree_topology2)
+```
+
+```{r fig1, fig.height = 2, fig.width = 4}
+#Scatterplots
+ggplot(df_plot, aes(x=cherries, y=pitchforks, color=consensus_signature)) + geom_point() + xlab('# of Cherries') + ylab('# of Pitchforks') + labs(color = "Consensus Signature") + scale_fill_discrete(name = "Consensus Signature", labels = c("HRD-Dup", "HRD-Del", "HRD-Other", 'FBI', 'TD', 'Simulation', 'NA')) + scale_colour_manual(values = c("#5890c0","#62a766","#4ac4b9","#833216","#d1352d","#7f7f7f","#cccccc")) + geom_smooth(method=lm, se=TRUE, col='black', size=0.5, alpha=1/10)
+```
+```{r fig1, fig.height = 4, fig.width = 3}
+## Boxplots of Consensus Signature
+#df_plot <- df_plot[df_plot$consensus_signature!='Undetermined',]
+#df_plot <- df_plot[df_plot$consensus_signature!='HRD-Other',]
+ggplot(df_plot, aes(x=BRCA_gene_status, y=colless.phylo, fill=BRCA_gene_status)) + geom_boxplot() + xlab('BRCA Status') + ylab('Colless Index') + labs(fill = "BRCA Status") + geom_jitter(alpha = 1/8)
+
+
+#+ scale_fill_discrete(name = "Consensus Signature", labels = c("HRD-Dup", "HRD-Del", "HRD-Other", 'FBI', 'TD', 'Simulation', 'NA')) + scale_colour_manual(values = c("#5890c0","#62a766","#4ac4b9","#833216","#d1352d","#7f7f7f","#cccccc")) 
+```
+```{r}
+##Density plots
+#df_plot <- df_plot[df_plot$consensus_signature!='Undetermined',]
+#df_plot <- df_plot[df_plot$consensus_signature!='HRD-Other',]
+
+
+ggplot(df_plot, aes(x=colless.phylo, fill=consensus_signature)) + geom_density() + xlab('Consensus Signature') + ylab('Frequency') + labs(fill = "Consensus Signature")
+
+```
+

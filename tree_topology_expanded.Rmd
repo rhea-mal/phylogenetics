@@ -1,0 +1,329 @@
+---
+title: "Tree topology"
+subtitle: "MSK SPECTRUM"
+author:
+  - "Ignacio Vazquez-Garcia"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    highlight: tango
+    df_print: paged
+    code_folding: hide
+    fig_align: center
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: yes
+params:
+   rmd: "290_tree_topology.Rmd"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(ggridges)
+library(tidytext)
+library(cowplot)
+library(tidytext)
+library(ggthemes)
+library(ggrepel)
+library(viridisLite)
+library(grid)
+library(RColorBrewer)
+library(vroom)
+library(ape)
+
+source("src/global_vars.R")
+```
+
+
+```{r}
+colors <- yaml::read_yaml("/work/shah/vazquezi/projects/spectrum/resources/annotation/colors.yaml") %>% 
+  lapply(function(x) purrr::map_depth(x, purrr::vec_depth(x)-2, unlist))
+
+names(colors$patient_id) = str_replace_all(names(colors$patient_id), "SPECTRUM-OV-", "")
+```
+
+# Load data
+
+## scDNA
+
+This is a test.
+
+```{r}
+
+dir_path <- "/work/shah/vazquezi/projects/spectrum/results/scdna/v20/tree-topology/outputs/tree_topology"
+files <- list.files(dir_path, pattern = "tree_topology_stats.tsv", full.names = TRUE, recursive = TRUE)
+
+tree_topology_stats <- lapply(files, function(f) {
+  patient_id <- basename(dirname(f))
+  tree_topology_stats <- readr::read_tsv(f)
+  return(tibble(patient_id, tree_topology_stats))
+}) %>% bind_rows()
+
+tree_topology_stats_wide_tbl <- tree_topology_stats %>%
+  mutate(patient_id = str_replace(patient_id, "OV_","SPECTRUM-OV-"),
+         patient_id_short = str_remove(patient_id, "SPECTRUM-OV-"))
+
+tree_topology_stats_long_tbl <- tree_topology_stats_wide_tbl %>%
+  pivot_longer(-c("patient_id","patient_id_short"), names_to = "feature", values_to = "value")
+
+```
+
+# Tree topology {.tabset}
+
+## Patient {.tabset}
+
+```{r}
+plot_tree_topology_stats_by_patient <- function(tree_topology_stats, config) {
+  tree_topology_stats <- tree_topology_stats %>%
+  #   filter(chr != "Y") %>%
+    left_join(config, by = "patient_id") %>%
+    mutate(patient_id_short = tidytext::reorder_within(patient_id_short, value, list(feature), fun = function(x) median(x, na.rm=T)))
+  #   mutate(patient_id = str_remove_all(patient_id, "SPECTRUM-OV-"))
+  
+  event_counts <- tree_topology_stats %>%
+    group_by(consensus_signature, patient_id_short) %>%
+    summarise(n_label = as.character(n()), .groups = "drop") %>%
+    ungroup()
+  
+  ## copy_var %>%
+  ## (function(x) wilcox.test(
+  ## ## x$mean_copy_var[x$sig_type == "HRD-Dup"],
+  ## x$mean_copy_var[x$sig_type == "FBI"],
+  ## x$mean_copy_var[x$sig_type != "FBI"],
+  ## exact = TRUE
+  ## )) %>%
+  ## print()
+  # label_y <- min(copy_var$copy_var, na.rm = TRUE)
+  # label_y <- label_y - (abs(label_y) * 0.5)
+  
+  tree_topology_stats %>%
+    ggplot(aes(x = patient_id_short, y = value, fill = consensus_signature)) +
+    facet_wrap(
+      facets = vars(feature),
+      scales = "free",
+      # space = "free_x"
+      ncol = 1
+    ) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = clrs$consensus_signature, limits = force) +
+    scale_x_reordered() +
+    # geom_text(data = event_counts, aes(label = n_label, y = label_y)) +
+    ## scale_y_log10() +
+    # coord_cartesian(ylim = c(NA, 3)) +
+    labs(x = "Patient", y = "",
+         fill = "Mutational\nsignature") +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_blank()
+    )
+}
+
+```
+
+### By signature
+
+```{r, fig.width=10, fig.height=30}
+
+p_tree_topology_stats_by_patient <- plot_tree_topology_stats_by_patient(tree_topology_stats_long_tbl, db$mutational_signatures)
+
+p_tree_topology_stats_by_patient
+
+# ggsave_pdf(filename = "figures/290_tree_topology/tree_topology_stats_by_patient.pdf",
+#            p_tree_topology_stats_by_patient, width = 10, height = 30)
+# ggsave_png(filename = "figures/290_tree_topology/tree_topology_stats_by_patient.png",
+#            p_tree_topology_stats_by_patient, width = 10, height = 30)
+
+```
+
+## Signature
+
+```{r}
+
+plot_tree_topology_stats_by_signature <- function(tree_topology_stats, config) {
+  tree_topology_stats <- tree_topology_stats %>%
+    left_join(config, by = "patient_id") %>%
+    mutate(consensus_signature = ordered(consensus_signature, levels = names(clrs$consensus_signature))) %>%
+    filter(!consensus_signature %in% c("HRD-Other","Undetermined"))
+
+  dataset_counts <- tree_topology_stats %>%
+    group_by(consensus_signature) %>%
+    summarise(n_label = as.character(n()), .groups = "drop") %>%
+    ungroup()
+  
+  tree_topology_stats %>%
+    ggplot(aes(x = consensus_signature, y = value, fill = consensus_signature)) +
+    geom_violin(scale = "width",
+                alpha = 0.75,
+                size = 0.25) +
+    geom_boxplot(
+      width = 0.1,
+      color = "#252525",
+      fill = "#252525",
+      outlier.shape = NA,
+      show.legend = FALSE
+    ) +
+    stat_summary(
+      fun = median,
+      geom = "point",
+      colour = "#f0f0f0",
+      show.legend = FALSE,
+      size = 0.25
+    ) +
+    scale_fill_manual(
+      values = clrs$consensus_signature,
+      limits = force
+    ) +
+    # geom_text(data = dataset_counts, aes(label = n_label, y = label_y)) +
+    facet_wrap(
+      facets = vars(feature),
+      scales = "free_y",
+      # space = "free_x"
+      nrow = 1
+    ) +
+    labs(x = NULL, y = "", fill = "Mutational\nsignature") +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      panel.grid.major.y = element_line(color = "gray90", size=0.5)
+      )
+  
+}
+
+```
+
+```{r, fig.width=25, fig.height=4}
+
+p_tree_topology_stats_by_signature <- plot_tree_topology_stats_by_signature(tree_topology_stats_long_tbl, db$mutational_signatures)
+
+p_tree_topology_stats_by_signature
+
+# ggsave_pdf(filename = "figures/290_tree_topology/002_tree_topology_stats_by_signature.pdf",
+#            p_tree_topology_stats_by_signature, width = 25, height = 4)
+# ggsave_png(filename = "figures/290_tree_topology/002_tree_topology_stats_by_signature.png",
+#            p_tree_topology_stats_by_signature, width = 25, height = 4)
+
+```
+
+## HR status
+
+```{r}
+
+plot_tree_topology_stats_by_hr_status <- function(tree_topology_stats, config) {
+  tree_topology_stats <- tree_topology_stats %>%
+    left_join(config, by = "patient_id") %>%
+    mutate(consensus_signature_short = ordered(consensus_signature_short, levels = names(clrs$hr_status))) %>%
+    filter(consensus_signature_short != "Undetermined")
+
+  dataset_counts <- tree_topology_stats %>%
+    group_by(consensus_signature_short) %>%
+    summarise(n_label = as.character(n()), .groups = "drop") %>%
+    ungroup()
+  
+  tree_topology_stats %>%
+    ggplot(aes(x = consensus_signature_short, y = value, fill = consensus_signature_short)) +
+    geom_violin(scale = "width",
+                alpha = 0.75,
+                size = 0.25) +
+    geom_boxplot(
+      width = 0.1,
+      color = "#252525",
+      fill = "#252525",
+      outlier.shape = NA,
+      show.legend = FALSE
+    ) +
+    stat_summary(
+      fun = median,
+      geom = "point",
+      colour = "#f0f0f0",
+      show.legend = FALSE,
+      size = 0.25
+    ) +
+    scale_fill_manual(
+      values = clrs$hr_status,
+      limits = force
+    ) +
+    # geom_text(data = dataset_counts, aes(label = n_label, y = label_y)) +
+    facet_wrap(
+      facets = vars(feature),
+      scales = "free_y",
+      # space = "free_x"
+      nrow = 1
+    ) +
+    labs(x = NULL, y = "", fill = "HR status") +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      panel.grid.major.y = element_line(color = "gray90", size=0.5)
+      )
+  
+}
+
+```
+
+```{r, fig.width=20, fig.height=4}
+
+p_tree_topology_stats_by_hr_status <- plot_tree_topology_stats_by_hr_status(tree_topology_stats_long_tbl, db$mutational_signatures)
+
+p_tree_topology_stats_by_hr_status
+
+# ggsave_pdf(filename = "figures/290_tree_topology/002_tree_topology_stats_by_hr_status.pdf",
+#            p_tree_topology_stats_by_hr_status, width = 4, height = 4)
+# ggsave_png(filename = "figures/290_tree_topology/002_tree_topology_stats_by_hr_status.png",
+#            p_tree_topology_stats_by_hr_status, width = 4, height = 4)
+
+```
+```{r}
+dir_path <- "/work/shah/vazquezi/projects/spectrum/results/scdna/v20/tree-inference/outputs/corrupt_tree"
+files <- list.files(dir_path, pattern = "tree.newick", full.names = TRUE, recursive = TRUE)
+trees <- lapply(files, function(f) {
+  patient_id <- basename(dirname(f))
+  tree <- read.tree(f)
+  return(tree)
+})# %>% cbind()
+tree_names <- lapply(files, function(f) {
+  patient_id <- basename(dirname(f))
+  patient_id <- str_replace(patient_id, "_", "-")
+  patient_id <- paste0("SPECTRUM-", patient_id)
+  return(patient_id)
+})
+names(trees) <- tree_names
+```
+
+
+```{r}
+library(ggtree)
+sorted_trees <- trees[
+  match(
+    tree_topology_stats_wide_tbl %>%
+    arrange(desc(colless_index_normalized)) %>%
+    pull(patient_id), names(trees)
+    )]
+
+
+class(sorted_trees) <- "multiPhylo"
+ggtree(sorted_trees) + 
+  facet_wrap(~tree_topology_stats_wide_tbl$colless_index_normalized[tree_topology_stats_wide_tbl$patient_id_short == str_remove(.id, "SPECTRUM-OV-")], scale="free", ncol=7) + 
+  ggtitle("Many trees. Such phylogenetics. Wow.")
+```
+```{r, fig.width=30, fig.height=30}
+sorted_trees <- trees[
+  order(match(
+    trees,
+    tree_topology_stats_wide_tbl %>%
+      arrange(-colless_index_normalized) %>%
+      pull(patient_id)
+    )
+  )]
+class(sorted_trees) <- "multiPhylo"
+ggtree(sorted_trees) + 
+  facet_wrap(~str_remove(.id, "SPECTRUM-OV-"), scale="free", ncol=7) + 
+  ggtitle("Many trees")
+
+```
+

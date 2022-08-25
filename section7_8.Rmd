@@ -1,0 +1,330 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+## MutationTimeR retreat project
+db <- read.table('/work/shah/users/malhotr/SPECTRUM_metadata.tsv', header=T, sep='\t', stringsAsFactors=F)
+finalPloidy <- read.csv('/work/shah/users/malhotr/REMIXT_postprocess.tsv', header=T, sep='\t', na.strings = '', stringsAsFactors=F)
+```
+
+```{r}
+##Read Rdata objects into list & filter out low quality ones
+##Filter the list of mutationtimer results by the aliquot IDs in the db$sequencing_bulk_dna table for which qc_status == 'Pass'
+# Not smoothened but also floored
+#rdata_files <- list.files('/Users/minsookim/sshfs/chois7/retreat/purity_parsed/results',pattern = '.RData',full.names = T, recursive = TRUE)
+# New rdata files
+rdata_files <- list.files('/work/shah/users/chois7/retreat/germline_flt/results',pattern = '.RData',full.names = T, recursive = TRUE)
+
+vcf_files <-  list.files('/work/shah/users/chois7/retreat/germline_flt/results',pattern = '.vcf',full.names = T, recursive = TRUE)
+purity_files <-  list.files('/work/shah/users/chois7/retreat/purity_parsed/results',pattern = '.purity.txt',full.names = T, recursive = TRUE)
+combinedfiles <- data.frame(gsub('.RData','',basename(rdata_files)),rdata_files,vcf_files,purity_files)
+colnames(combinedfiles) <- c('isabl_id','rdata','vcf','purity')
+combinedfiles <- merge(combinedfiles,db,by='isabl_id',all=T)
+combinedfiles <- merge(combinedfiles,finalPloidy,by.x='isabl_id',by.y='tumor_aliquot_id',all=T)
+combinedfiles <- combinedfiles[which(combinedfiles$qc_status == 'Pass'),]
+```
+
+```{r}
+# BB
+library(VariantAnnotation)
+finalBB <- list()
+for(eachid in unique(combinedfiles$isabl_id)){
+  bb = NULL
+  
+  load(combinedfiles$rdata[which(combinedfiles$isabl_id == eachid)])
+  
+  colnames(mcols(bb)) <- sub("star.1","time.star",colnames(mcols(bb)) ) # Fix naming problem
+  
+  # bb
+  bb$total_cn = bb$major_cn + bb$minor_cn
+  
+  finalBB[[eachid]] <- bb
+}
+```
+
+```{r}
+# Calculating the average ploidy across the regions
+averagePloidy <- function(bb) {
+  # c is the total copy number
+  c <- if(!is.null(bb$copy_number)) bb$copy_number else bb$total_cn
+  # average copy number accounting for the bins
+  sum(width(bb) * c * bb$clonal_frequency, na.rm=TRUE) / sum(width(bb) * bb$clonal_frequency, na.rm=TRUE)
+}
+
+# Calculating the average homozygous regions (LOH)
+averageHom <- function(bb){
+  sum(width(bb) * (bb$minor_cn == 0) * bb$clonal_frequency, na.rm=TRUE) / sum(width(bb) * bb$clonal_frequency, na.rm=TRUE)
+}
+
+finalPloidy <- sapply(finalBB, averagePloidy)
+names(finalPloidy) <- names(finalBB)
+
+## Based on the Google Doc
+# finalPloidy <- combinedfiles$ploidy
+# names(finalPloidy) <- combinedfiles$isabl_id
+
+finalHom <- sapply(finalBB, averageHom)
+names(finalHom) <- names(finalBB)
+```
+
+```{r}
+## Determine the WGD status
+.classWgd <- function(ploidy, hom) 2.9 -2*hom <= ploidy
+classWgd <- function(bb) .classWgd(averagePloidy(bb), averageHom(bb))
+isWgd <- .classWgd(finalPloidy, finalHom)
+table(isWgd)
+
+plot(finalHom, finalPloidy, col=.classWgd(finalPloidy, finalHom)+1, xlim=c(0,1))
+
+#####################
+finalisWgd <- list()
+for(eachid in unique(combinedfiles$isabl_id)){
+  isWgd = NULL
+  ploidy = NULL
+  hom = NULL
+  load(combinedfiles$rdata[which(combinedfiles$isabl_id == eachid)])
+  
+  print(isWgd)
+  
+  ## isWgd
+  #finalisWgd[[eachid]] <- isWgd
+}
+#####################
+```
+
+```{r}
+## Tumor purity
+#finalClusters <- list()
+finalPurity <- numeric()
+for(eachid in unique(combinedfiles$isabl_id)){
+  
+  # Tumor cluster
+  #finalClusters[[eachid]] <- clusters
+  
+  currpurity <- read.csv(combinedfiles$purity[which(combinedfiles$isabl_id == eachid)], header=F, sep='\t', na.strings = '', stringsAsFactors=F)
+  
+  # Tumor purity
+  finalPurity[eachid] <- currpurity$V1
+}
+
+findMainCluster <- function(bb, min.dist=0.05){
+  w <- which(bb$n.snv_mnv > 20 & !is.na(bb$time))
+  #   d <- dist(bb$time[w])
+  #   ci <- weighted.mean((bb$time.up - bb$time.lo)[w], width(bb)[w])
+  #   h <- hclust(d, method='average', members=bb$n.snv_mnv[w])
+  #   c <- cutree(h, h=ci)
+  #   ww <- c==which.max(table(c))
+  #   weighted.mean(bb$time[w][ww], 1/((bb$time.up - bb$time.lo + min.dist)[w][ww]), na.rm=TRUE)
+  s <- seq(0,1,0.01)
+  l2 <- pmin(bb$time.lo, bb$time - min.dist)[w]
+  u2 <- pmax(bb$time.up, bb$time + min.dist)[w]
+  l1 <- (l2 +  bb$time[w])/2
+  u1 <- (u2+  bb$time[w])/2
+  wd <- as.numeric(width(bb)[w])
+  o <- sapply(s, function(i) sum(wd * ( (l2 <= i & u2 >=i) + (l1 <= i & u1 >= i))))
+  s[which.max(o)]
+}
+
+fractionGenomeWgdCompatible <- function(bb, min.dist=0.05){
+  m <- findMainCluster(bb)
+  l <- pmin(bb$time.lo, bb$time - min.dist)
+  u <- pmax(bb$time.up, bb$time + min.dist)
+  w <- which(l <= m & u >= m)
+  avgCi <- weighted.mean(bb$time.up- bb$time.lo, width(bb), na.rm=TRUE)
+  sd.wgd <- sqrt(weighted.mean((bb$time[w] - m)^2, width(bb)[w], na.rm=TRUE))
+  sd.all <- sqrt(weighted.mean((bb$time - m)^2, width(bb), na.rm=TRUE))
+  c(nt.wgd=sum(as.numeric(width(bb))[w]), nt.total=sum(as.numeric(width(bb))[!is.na(bb$time)]), time.wgd=m, n.wgd=length(w), n.all = sum(!is.na(bb$time)), chr.wgd = length(unique(seqnames(bb)[w])), chr.all = length(unique(seqnames(bb)[!is.na(bb$time)])), sd.wgd=sd.wgd, avg.ci=avgCi, sd.all=sd.all) 
+}
+
+fracGenomeWgdComp <- t(sapply(finalBB, function(bb) {
+  fgw <- try(fractionGenomeWgdCompatible(bb)); 
+  if(class(fgw)!='try-error') fgw
+  else rep(NA,10)}))
+rownames(fracGenomeWgdComp) <- names(finalBB)
+
+d <- fracGenomeWgdComp
+View(d)
+
+###
+# Try to understand this
+#
+# nt.wgd: nucleotides that are WGD
+# nt.total: total nucleotides
+# time.wgd: 
+# n.wgd: 
+# n.all: 
+# chr.wgd: 
+# chr.all: 
+# sd.wgd: 
+# avg.ci: average confidence interval
+# sd.all: 
+```
+
+```{r}
+i <- d[,"avg.ci"]<=0.5 & d[,"chr.all"] > 2
+timingClass <- paste(ifelse(isWgd,"WGD","ND"), ifelse(!i, "uninformative",""))
+timingClass[i] <- paste0(timingClass[i], ifelse(d[i,"nt.wgd"]/d[i,"nt.total"] > 0.75,"sync","async"))
+timingClass <- factor(timingClass)
+
+colTime <- c("WGD sync"="#6B8934",
+"WGD async"="#A0C758",
+"WGD uninformative"="#BEC6AD",
+"ND uninformative"="#CEB299",
+"ND sync"="#CC6415",
+"ND async"="#EF7B00")
+
+colTime = colTime[match(levels(timingClass),names(colTime))]
+c <- c(RColorBrewer::brewer.pal(9, "Pastel1"),"#DDDDDD")
+t <- table(timingClass)
+pie(t, init.angle=90, labels=paste0(names(t), ",\nn=", t), col=colTime)
+par(new=TRUE)
+symbols(x=0,y=0,circles=0.4, inches=FALSE, add=TRUE, bg="white")
+```
+```{r}
+# Output the timing classification
+dat_info <- data.frame(finalPloidy,isWgd,timingClass)
+dat_info$sampleid <- rownames(dat_info)
+dat_info <- dat_info[,c("sampleid","finalPloidy","isWgd","timingClass")]
+write.table(dat_info,'/work/shah/users/malhotr/ploidyinfo.txt',col.names = T, row.names = F, sep='\t',quote = F)
+
+
+# SPECTRUM-OV-004_S1_LEFT_ADNEXA_R1
+# SPECTRUM-OV-007_S1_INFRACOLIC_OMENTUM_R1
+# SPECTRUM-OV-009_S1_RIGHT_OVARY_R1
+# SPECTRUM-OV-022_S1_LEFT_OVARY_R1
+# SPECTRUM-OV-026_S1_LIVER_R1
+# SPECTRUM-OV-050_S1_INFRACOLIC_OMENTUM_R1
+# SPECTRUM-OV-070_S1_PELVIC_PERITONEUM_INFRACOLIC_OMENTUM_R1
+######################
+```
+```{r}
+# VCF file
+currvcf
+currvcf <- read.csv(combinedfiles$vcf[which(combinedfiles$isabl_id == 'SPECTRUM-OV-003_S2_PELVIC_PERITONEUM_R1')], header=F, sep='\t', na.strings = '', comment.char = "#", stringsAsFactors=F)
+colnames(currvcf) = c('CHR','POS','ID','REF','ALT','QUAL','FILTER','INFO','FORMAT','Tumor','Normal')
+
+finalSnv <- list()
+finalSnv <- append(finalSnv,vcf)
+names(finalSnv) <- sub(".conse.+","",dir(p, pattern="*.vcf.RData", full.names=FALSE))
+
+finalDriversAnnotated <- finalDrivers
+d <- info(finalSnv[[3]])[seq_along(finalDriversAnnotated),19:32]
+#d[,] <- NA
+mcols(finalDriversAnnotated)[colnames(d)] <- d
+for(i in seq_along(finalDriversAnnotated)){
+  if(finalDriversAnnotated$mut_type[i] %in% c("snv","mnv")){
+    v <- finalSnv[[as.character(finalDriversAnnotated$sample[i])]]
+  }else{
+    v <- finalIndel[[as.character(finalDriversAnnotated$sample[i])]]
+  }
+  j <- findOverlaps(finalDriversAnnotated[i], v, select='first')
+  if(!is.na(j)){
+    mcols(finalDriversAnnotated)[i,colnames(d)] <- info(v)[j, colnames(d)]
+    refDepth(finalDriversAnnotated)[i] <- info(v)[j,"t_ref_count"]
+    altDepth(finalDriversAnnotated)[i] <- info(v)[j,"t_alt_count"]
+  }
+  else
+    mcols(finalDriversAnnotated)[i,colnames(d)] <- NA
+}
+```
+
+```{r}
+fracGenomeWgdComp <- t(sapply(finalBB, function(bb) {
+  fgw <- try(fractionGenomeWgdCompatible(bb)); 
+  if(class(fgw)!='try-error') fgw
+  else rep(NA,10)}))
+rownames(fracGenomeWgdComp) <- names(finalBB)
+
+d <- fracGenomeWgdComp
+i <- d[,"avg.ci"]<=0.5 & d[,"chr.all"] > 2 #&  fracGenomeWgdComp[,"nt.total"]/chrOffset["MT"] >= 0.1
+timingClass <- paste(ifelse(isWgd,"WGD","ND"), ifelse(!i, "uninformative",""))
+timingClass[i] <- paste0(timingClass[i], ifelse(d[i,"nt.wgd"]/d[i,"nt.total"] > 0.75,"sync","async"))
+#timingClass[i] <- paste0(timingClass[i], cut(fracGenomeWgdComp[i,"nt.wgd"]/fracGenomeWgdComp[i,"nt.total"], c(0,0.5,0.8,1), include.lowest=TRUE))
+timingClass <- factor(timingClass)
+```
+```{r}
+##########SECTION 8############
+aggregatePerChromosome <- function(bb, isWgd=FALSE){
+    .aggregateSegments <- function(m){
+        #m <- mcols(bb)
+        t <- weighted.mean(m$time, m$n.snv_mnv, na.rm=TRUE)
+        n <- sum(m$n.snv_mnv[!is.na(m$time)], na.rm=TRUE)
+        sd <- sd(m$time, na.rm=TRUE)
+        ci <- weighted.mean(m$time.up-m$time.lo, m$n.snv_mnv, na.rm=TRUE)
+        w <- sum(m$width[!is.na(m$time)], na.rm=TRUE)
+        c(time=t, n=n, sd=sd, ci=ci,w=w)
+    }
+#   if(!isWgd){
+    s <- split(as.data.frame(bb)[,c("time","time.up","time.lo","n.snv_mnv","width")], seqnames(bb))
+    r <- t(sapply(s, .aggregateSegments))
+    r <- r[c(1:22,"X"),]
+#   }else{
+    w <- .aggregateSegments(as.data.frame(bb))
+    r <- rbind(r,WGD=w)
+#   }
+    return(r)
+}
+
+
+```
+```{r}
+library(parallel)
+allChrAgg <- simplify2array(mclapply(finalBB, aggregatePerChromosome, mc.cores=2))
+
+t <- allChrAgg[1:23,"time",!isWgd]
+t[allChrAgg[1:23,"w",!isWgd] < diff(chrOffset)[1:23]*.33] <- NA
+
+s <- split(as.data.frame(t(t)), droplevels(donor2type[sample2donor[names(finalSnv)]])[!isWgd])
+n <- 10
+
+
+at <- function(x, n){
+    if(sum(!is.na(x))<3) return(rep(sum(!is.na(x))/n,n))
+    bw=if(sum(!is.na(x))< 6) 0.5 else "nrd0"
+    d <- density(x, n=n, from=1/n/2, to=1-1/n/2, bw=bw, na.rm=TRUE)
+    d$y/sum(d$y)*d$n
+}
+
+allChrCancerHist <- sapply(s, apply, 2, at, n=n, simplify="array")
+u <- split(data.frame(WGD=allChrAgg["WGD","time",isWgd]), droplevels(donor2type[sample2donor[names(finalSnv)]])[isWgd])
+wgdCancerHist <- sapply(u, function(x) if(nrow(x)>0){at(x$WGD,n=n)}else{rep(0,n)}, simplify="array")
+allChrCancerHist <- abind::abind(allChrCancerHist, All=sapply(sapply(s, as.matrix), at, n=n, simplify="array")/23*5, WGD=wgdCancerHist, along=2)
+```
+```{r}
+### START SECTION 8 ###
+isWgd <- .classWgd(finalPloidy, finalHom)
+table(isWgd)
+```
+```{r}
+plot(finalHom, finalPloidy, col=.classWgd( finalPloidy, finalHom)+1, xlim=c(0,1))
+```
+
+```{r}
+fracGenomeWgdComp <- t(sapply(finalBB, function(bb) {
+                    fgw <- try(fractionGenomeWgdCompatible(bb)); 
+                    if(class(fgw)!='try-error') fgw
+                    else rep(NA,10)}))
+rownames(fracGenomeWgdComp) <- names(finalBB)
+```
+```{r}
+## THIS SECTION NEEDS chr0ffset
+wgdStar <- factor(rep(1,nrow(fracGenomeWgdComp)), levels=0:3, labels=c("unlikely","uninformative","likely","very likely"))
+wgdStar[fracGenomeWgdComp[,"avg.ci"]<=0.75 & fracGenomeWgdComp[,"nt.total"]/chrOffset["MT"] >= 0.33 ] <- "likely"
+wgdStar[fracGenomeWgdComp[,"nt.wgd"]/fracGenomeWgdComp[,"nt.total"] < 0.66] <- "unlikely"
+wgdStar[wgdStar=="likely" & fracGenomeWgdComp[,"nt.wgd"]/fracGenomeWgdComp[,"nt.total"] > 0.8 & fracGenomeWgdComp[,"sd.wgd"] < 0.1 &  fracGenomeWgdComp[,"nt.total"]/chrOffset["MT"] > 0.5] <- "very likely"
+names(wgdStar) <-  names(finalBB)
+prop.table(table(wgdStar[!isWgd]))
+```
+```{r}
+wgdPoss <- !isWgd & 2.5 - 1.5 * finalHom <= finalPloidy
+
+wgdStat <- factor(wgdPoss + 2*isWgd - wgdPoss*isWgd, labels=c("absent","possible","present"))
+table(wgdStat, wgdStar)
+```
+```{r}
+
+```
+
